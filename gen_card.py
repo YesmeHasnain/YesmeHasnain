@@ -1,6 +1,16 @@
 """
 Build the neofetch-style profile card as a standalone SVG.
 
+The layout follows the reference profile this was modelled on, and the two
+things that make it read as that card rather than a generic stats box are:
+
+  * the VALUE is right-aligned to the card's right edge, with the label left.
+    Dotted leaders were tried first and are a different design language. This
+    also removes every dependence on the reader's monospace advance width:
+    labels anchor start, values anchor end, so nothing drifts between fonts.
+  * sections are separated by blank lines, and `Contact` / `GitHub Stats`
+    carry a header with a rule running to the right edge.
+
 Three decisions that are not cosmetic:
 
 1. SVG, not a fenced code block. GitHub markdown renders no ANSI colour, so a
@@ -10,167 +20,210 @@ Three decisions that are not cosmetic:
    GitHub's light and dark themes. A transparent card with dark text vanishes
    in dark mode and the other way round.
 
-3. The "HS" mark is drawn as <rect> cells, NOT as U+2588 FULL BLOCK text.
-   An SVG in a README is loaded as an IMAGE, so no webfont reaches it and the
-   reader's own monospace has to carry every glyph -- and plenty of them have
-   no FULL BLOCK, which would show tofu. Rects also sit flush; text blocks
-   left a line-gap between rows and the letters came out striped (measured:
-   font-size 14 on a 20px line leaves ~6px of hole).
+3. The portrait is ASCII generated from the real avatar, as the reference
+   does. The avatar is a mirror selfie with a tiled background, so a naive
+   luminance ramp over the whole square came out as unreadable noise
+   (measured). What makes it legible is cropping to the subject first and
+   autocontrasting before sampling.
 
 Every figure is measured from the GitHub API, never typed. Anything the
-account does not state -- email, city, editor -- is simply absent.
+account does not state is simply absent. Re-run this rather than editing a
+number by hand.
+
+  python gen_card.py
 """
-
 import os
+from PIL import Image, ImageOps
 
-# Write beside this file, so the script works from any working directory and
-# needs no absolute path baked into it.
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# ── palette: GitHub's own dark canvas, so the card sits in the page ──────
-BG, BORDER = "#0d1117", "#30363d"
-GOLD, TEXT, DIM = "#f0b429", "#c9d1d9", "#6e7681"
-CYAN, GREEN = "#56d4dd", "#7ee787"
+# ── palette, taken off the reference card ───────────────────────────────
+BG      = "#0d1117"   # GitHub's own dark canvas, so the card sits in the page
+BORDER  = "#21262d"
+AMBER   = "#e8a33d"   # labels
+NAME    = "#f0b429"
+VALUE   = "#79c0ff"   # values
+TEAL    = "#56d4dd"
+GREEN   = "#7ee787"
+HEAD    = "#c9d1d9"   # section headers
+RULE    = "#30363d"
+# The portrait is deliberately DIM. Sampled off the reference card, its
+# glyphs average #575f73 against a #0d1117 ground -- nearer a watermark than
+# body text. A brighter grey turns the art into the loudest thing on the card
+# and the information stops being the point.
+ART     = "#6b7484"
 
-# ── the "HS" mark as a bitmap, 5 wide per letter ────────────────────────
-# The S has OPEN corners on purpose. A 5x7 block "S" with square corners is
-# pixel-for-pixel a block "5" -- rendered once with filled corners and it read
-# as "H5". Dropping the four corner cells is what makes it an S.
-GLYPHS = {
-    "H": ["1...1", "1...1", "1...1", "11111", "1...1", "1...1", "1...1"],
-    "S": [".1111", "1....", "1....", ".111.", "....1", "....1", "1111."],
-}
-MARK = "HS"
+# ── the facts, as measured from the GitHub API ──────────────────────────
+HANDLE = "yesmehasnain"
 
-# ── the facts, as measured ──────────────────────────────────────────────
-LANGS = [
-    ("PHP",        35.6, "#8993be"),
-    ("CSS",        30.6, "#563d7c"),
-    ("JavaScript", 10.8, "#f1e05a"),
-    ("SCSS",        8.1, "#c6538c"),
-    ("HTML",        8.0, "#e34c26"),
-    ("TypeScript",  2.5, "#3178c6"),
-    ("Blade",       2.2, "#f7523f"),
+GROUPS = [
+    [
+        ("OS",                    "Laravel, PHP 8.4, MySQL",            GREEN),
+        ("Uptime",                "3 years, 5 months, 10 days",         VALUE),
+        ("Host",                  "Zenesa Tech",                        VALUE),
+        ("Kernel",                "Laravel 12 (php8.4-fpm, nginx)",     VALUE),
+        ("IDE",                   "VS Code, Claude Code",               VALUE),
+    ],
+    [
+        ("Languages.Programming", "PHP, JavaScript, TypeScript",        VALUE),
+        ("Languages.Computer",    "HTML, CSS, SCSS, Blade",             VALUE),
+        ("Languages.Real",        "Urdu, English",                      VALUE),
+    ],
+    [
+        ("Projects.Live",         "Shareide, per seat ride sharing",    TEAL),
+        ("Projects.Apps",         "Rider, Fleet (React Native, Expo)",  TEAL),
+    ],
 ]
 
-ROWS = [
-    ("OS",       "Laravel · PHP 8",                GREEN),
-    ("Host",     "Zenesa Tech",                    TEXT),
-    ("Uptime",   "3 years, 5 months",              TEXT),
-    ("Shell",    "bash · artisan",                 TEXT),
-    ("Stack",    "Laravel · React Native · MySQL", CYAN),
-    ("Repos",    "16 public",                      TEXT),
-    ("Building", "Shareide · per seat ride sharing", GOLD),
-    ("Live",     "shareide.com",                   CYAN),
+CONTACT = [
+    ("Website",  "shareide.com",                 VALUE),
+    ("LinkedIn", "in/hasnain-saleem-67388a284",  VALUE),
+    ("Company",  "Zenesa Tech",                  VALUE),
 ]
+
+# left label, left value, right label, right value
+STATS = [
+    ("Repos",   "16",    "Stars",     "12"),
+    ("Commits", "8,944", "Followers", "4"),
+]
+CODE_LABEL = "Code on GitHub"
+CODE_VALUE = "42.5 MB"
+CODE_SPLIT = "PHP 35.6%, CSS 30.6%, JS 10.8%"
 
 # ── layout ──────────────────────────────────────────────────────────────
-FS, LH = 14, 20
-PAD = 26
-CARD_W, CARD_H = 820, 384
-CELL, GAP = 15, 2                      # mark cell size
-MARK_X, MARK_Y = PAD + 22, PAD + 60
-INFO_X = PAD + 230
+CARD_W = 900
+PAD = 28
+FS, LH = 12.5, 19            # info text
+AFS, ALH = 10.0, 10.9        # portrait: denser than the text, as in the reference
+ART_COLS, ART_ROWS = 30, 42
+
+ART_X = PAD + 4
+INFO_X = PAD + 212           # label column
+RIGHT_X = CARD_W - PAD - 6   # every value right-anchors here
+
+
+def ascii_portrait():
+    """Crop to the subject, autocontrast, then ramp. The crop is what makes
+    it readable: sampling the whole square lets the tiled background win."""
+    im = Image.open(os.path.join(HERE, "avatar.png")).convert("L")
+    w, h = im.size
+    # These four numbers were chosen by rendering three crops and reading
+    # them, not by eye on the photo. A wider crop drags in the dark wall at
+    # the left, which maps to a solid column of '@' and reads as a bar rather
+    # than as art; dropping below y=0.75 brings in the scooter, which is the
+    # brightest thing in the frame and swamps the figure.
+    crop = im.crop((int(w * 0.20), 0, int(w * 0.66), int(h * 0.75)))
+    crop = ImageOps.autocontrast(crop, cutoff=2)
+    small = crop.resize((ART_COLS, ART_ROWS))
+    px = small.load()
+    # no &, < or > in this ramp, so nothing needs XML escaping
+    ramp = " .:-=+*#%@"
+    return ["".join(ramp[min(len(ramp) - 1, int(px[x, y] / 256 * len(ramp)))]
+                    for x in range(ART_COLS)) for y in range(ART_ROWS)]
+
 
 def esc(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;")
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 out = []
 A = out.append
 
+
+def row(y, label, value, colour):
+    """Label anchored left, value anchored RIGHT. Nothing between them, so
+    the columns cannot drift with the reader's monospace width."""
+    A(f'<text x="{INFO_X}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{AMBER}">{esc(label)}:</text>')
+    A(f'<text x="{RIGHT_X}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{colour}" text-anchor="end">{esc(value)}</text>')
+
+
+def header(y, text):
+    A(f'<text x="{INFO_X}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{HEAD}">{esc(text)}</text>')
+    x0 = INFO_X + (len(text) + 2) * FS * 0.6
+    A(f'<line x1="{x0}" y1="{y - 4}" x2="{RIGHT_X}" y2="{y - 4}" '
+      f'stroke="{RULE}" stroke-width="1" stroke-dasharray="2 3"/>')
+
+
+# ── measure the height the content needs, then size the card to it ──────
+rows = 1 + 1                                   # handle + blank
+for g in GROUPS:
+    rows += len(g) + 1
+rows += 1 + len(CONTACT) + 1                   # Contact header + rows + blank
+rows += 1 + len(STATS) + 1                     # Stats header + rows + code line
+INFO_H = rows * LH
+ART_H = ART_ROWS * ALH
+CARD_H = int(PAD * 2 + 16 + max(INFO_H, ART_H))
+
 A(f'<svg xmlns="http://www.w3.org/2000/svg" width="{CARD_W}" height="{CARD_H}" '
   f'viewBox="0 0 {CARD_W} {CARD_H}" role="img" '
-  f'aria-label="Hasnain Saleem, Laravel developer at Zenesa Tech, building '
-  f'Shareide, a per seat ride sharing app for Pakistan">')
-A('<title>hasnain@github</title>')
-A(f'<rect x="1" y="1" width="{CARD_W-2}" height="{CARD_H-2}" rx="12" '
+  f'aria-label="yesmehasnain. Laravel developer at Zenesa Tech, building '
+  f'Shareide, a per seat ride sharing platform for Pakistan. 16 public '
+  f'repositories, 12 stars, 8944 commits.">')
+A('<title>yesmehasnain</title>')
+A(f'<rect x="0.75" y="0.75" width="{CARD_W-1.5}" height="{CARD_H-1.5}" rx="10" '
   f'fill="{BG}" stroke="{BORDER}" stroke-width="1.5"/>')
 
-# title bar, so it reads as a terminal rather than a box
-for i, c in enumerate(("#ff5f57", "#febc2e", "#28c840")):
-    A(f'<circle cx="{PAD + i*18}" cy="{PAD}" r="6" fill="{c}"/>')
-A(f'<text x="{PAD + 66}" y="{PAD + 4.5}" font-family="monospace" font-size="12" '
-  f'fill="{DIM}">hasnain@github: ~</text>')
-
-# ── the mark ────────────────────────────────────────────────────────────
-x0 = MARK_X
-for ch in MARK:
-    g = GLYPHS[ch]
-    for r, row in enumerate(g):
-        for c, bit in enumerate(row):
-            if bit != "1":
-                continue
-            A(f'<rect x="{x0 + c*(CELL+GAP)}" y="{MARK_Y + r*(CELL+GAP)}" '
-              f'width="{CELL}" height="{CELL}" rx="2.5" fill="{GOLD}"/>')
-    x0 += 5*(CELL+GAP) + (CELL+GAP)    # one blank column between letters
-
-mark_w = len(MARK)*5*(CELL+GAP) + (CELL+GAP) - GAP
-mark_bottom = MARK_Y + 7*(CELL+GAP)
-A(f'<line x1="{MARK_X}" y1="{mark_bottom + 16}" x2="{MARK_X + mark_w}" '
-  f'y2="{mark_bottom + 16}" stroke="{BORDER}" stroke-width="1.5"/>')
-A(f'<text x="{MARK_X + mark_w/2}" y="{mark_bottom + 40}" text-anchor="middle" '
-  f'font-family="monospace" font-size="13" fill="{DIM}" '
-  f'letter-spacing="3">HASNAIN</text>')
+# ── the portrait ────────────────────────────────────────────────────────
+art = ascii_portrait()
+art_top = PAD + 14
+for i, line in enumerate(art):
+    if not line.strip():
+        continue
+    A(f'<text x="{ART_X}" y="{art_top + i*ALH}" font-family="monospace" '
+      f'font-size="{AFS}" fill="{ART}" xml:space="preserve">{esc(line)}</text>')
 
 # ── the info block ──────────────────────────────────────────────────────
-y = PAD + 50
+y = PAD + 16
 A(f'<text x="{INFO_X}" y="{y}" font-family="monospace" font-size="{FS}" '
-  f'xml:space="preserve">'
-  f'<tspan fill="{GOLD}" font-weight="bold">hasnain</tspan>'
-  f'<tspan fill="{TEXT}">@</tspan>'
-  f'<tspan fill="{GOLD}" font-weight="bold">github</tspan></text>')
-y += 8
-A(f'<line x1="{INFO_X}" y1="{y}" x2="{INFO_X + 330}" y2="{y}" '
-  f'stroke="{BORDER}" stroke-width="1.5"/>')
-y += LH + 2
+  f'fill="{NAME}" font-weight="bold">{HANDLE}</text>')
+x0 = INFO_X + (len(HANDLE) + 2) * FS * 0.6
+A(f'<line x1="{x0}" y1="{y - 4}" x2="{RIGHT_X}" y2="{y - 4}" '
+  f'stroke="{RULE}" stroke-width="1" stroke-dasharray="2 3"/>')
+y += LH * 2
 
-for label, value, colour in ROWS:
-    # dots pad the label so the values line up in whatever monospace the
-    # reader has -- a fixed x for the value would drift between fonts
-    pad = (label + " ").ljust(11, ".")
-    A(f'<text x="{INFO_X}" y="{y}" font-family="monospace" font-size="{FS}" '
-      f'xml:space="preserve">'
-      f'<tspan fill="{DIM}">{pad}</tspan> '
-      f'<tspan fill="{colour}">{esc(value)}</tspan></text>')
+for g in GROUPS:
+    for label, value, colour in g:
+        row(y, label, value, colour)
+        y += LH
     y += LH
 
-# ── languages: the measured split ───────────────────────────────────────
-y += 14
+header(y, "Contact")
+y += LH
+for label, value, colour in CONTACT:
+    row(y, label, value, colour)
+    y += LH
+y += LH
+
+header(y, "GitHub Stats")
+y += LH
+MID = INFO_X + (RIGHT_X - INFO_X) * 0.52
+for llab, lval, rlab, rval in STATS:
+    A(f'<text x="{INFO_X}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{AMBER}">{llab}:</text>')
+    A(f'<text x="{MID - 22}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{VALUE}" text-anchor="end">{lval}</text>')
+    A(f'<text x="{MID}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{RULE}">|</text>')
+    A(f'<text x="{MID + 18}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{AMBER}">{rlab}:</text>')
+    A(f'<text x="{RIGHT_X}" y="{y}" font-family="monospace" font-size="{FS}" '
+      f'fill="{VALUE}" text-anchor="end">{rval}</text>')
+    y += LH
+
 A(f'<text x="{INFO_X}" y="{y}" font-family="monospace" font-size="{FS}" '
-  f'fill="{DIM}" xml:space="preserve">Languages ..</text>')
-y += 12
-
-BAR_W, BAR_H = 440, 9
-A(f'<clipPath id="barclip"><rect x="{INFO_X}" y="{y}" width="{BAR_W}" '
-  f'height="{BAR_H}" rx="4.5"/></clipPath>')
-A('<g clip-path="url(#barclip)">')
-x = INFO_X
-for name, pct, colour in LANGS:
-    w = BAR_W * pct / 100.0
-    A(f'<rect x="{x:.1f}" y="{y}" width="{w:.1f}" height="{BAR_H}" fill="{colour}"/>')
-    x += w
-A(f'<rect x="{x:.1f}" y="{y}" width="{BAR_W}" height="{BAR_H}" fill="{BORDER}"/>')
-A('</g>')
-y += BAR_H + 21
-
-for chunk in (LANGS[:4], LANGS[4:]):
-    cx = INFO_X
-    for name, pct, colour in chunk:
-        A(f'<circle cx="{cx+4}" cy="{y-4.5}" r="4" fill="{colour}"/>')
-        A(f'<text x="{cx+14}" y="{y}" font-family="monospace" font-size="12" '
-          f'fill="{TEXT}">{name} {pct}%</text>')
-        cx += 14 + int(len(f"{name} {pct}%") * 12 * 0.6) + 18
-    y += 18
-
-# ── neofetch's own colour row ───────────────────────────────────────────
-sw_y = CARD_H - PAD - 8
-for i, c in enumerate(("#ff7b72", "#f0b429", "#7ee787", "#56d4dd",
-                       "#79c0ff", "#d2a8ff", "#c9d1d9", "#6e7681")):
-    A(f'<rect x="{MARK_X + i*20}" y="{sw_y}" width="16" height="10" rx="2" fill="{c}"/>')
+  f'fill="{AMBER}">{CODE_LABEL}:</text>')
+A(f'<text x="{RIGHT_X}" y="{y}" font-family="monospace" font-size="{FS}" '
+  f'text-anchor="end"><tspan fill="{GREEN}">{CODE_VALUE}</tspan>'
+  f'<tspan fill="{RULE}">  {{</tspan>'
+  f'<tspan fill="{VALUE}">{esc(CODE_SPLIT)}</tspan>'
+  f'<tspan fill="{RULE}">}}</tspan></text>')
 
 A('</svg>')
 
 svg = "\n".join(out)
-out_path = os.path.join(HERE, "card-dark.svg")
-open(out_path, "w", encoding="utf-8").write(svg)
-print("written", len(svg), "chars ->", out_path)
+path = os.path.join(HERE, "card-dark.svg")
+open(path, "w", encoding="utf-8").write(svg)
+print(f"written {len(svg)} chars, card {CARD_W}x{CARD_H} -> {path}")
