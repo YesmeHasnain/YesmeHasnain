@@ -21,7 +21,11 @@ Every figure is measured from the GitHub API, never typed. Anything the
 account does not state -- email, city, editor -- is simply absent.
 """
 
-W = r"C:\Users\1\AppData\Local\Temp\ghprof"
+import os
+
+# Write beside this file, so the script works from any working directory and
+# needs no absolute path baked into it.
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ── palette: GitHub's own dark canvas, so the card sits in the page ──────
 BG, BORDER = "#0d1117", "#30363d"
@@ -55,7 +59,7 @@ ROWS = [
     ("Uptime",   "3 years, 5 months",              TEXT),
     ("Shell",    "bash · artisan",                 TEXT),
     ("Stack",    "Laravel · React Native · MySQL", CYAN),
-    ("Repos",    "15 public",                      TEXT),
+    ("Repos",    "16 public",                      TEXT),
     ("Building", "Shareide · per seat ride sharing", GOLD),
     ("Live",     "shareide.com",                   CYAN),
 ]
@@ -167,5 +171,6 @@ for i, c in enumerate(("#ff7b72", "#f0b429", "#7ee787", "#56d4dd",
 A('</svg>')
 
 svg = "\n".join(out)
-open(W + r"\card-dark.svg", "w", encoding="utf-8").write(svg)
-print("written", len(svg), "chars")
+out_path = os.path.join(HERE, "card-dark.svg")
+open(out_path, "w", encoding="utf-8").write(svg)
+print("written", len(svg), "chars ->", out_path)
